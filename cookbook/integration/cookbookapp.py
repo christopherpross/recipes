@@ -1,18 +1,15 @@
-import base64
-import gzip
-import json
 import re
-from gettext import gettext as _
 from io import BytesIO
 
 import requests
-import yaml
 
+from cookbook.helper.HelperFunctions import validate_import_url
 from cookbook.helper.ingredient_parser import IngredientParser
-from cookbook.helper.recipe_html_import import get_recipe_from_source
-from cookbook.helper.recipe_url_import import iso_duration_to_minutes
+from cookbook.helper.recipe_url_import import (get_from_scraper, get_images_from_soup,
+                                               iso_duration_to_minutes)
+from recipe_scrapers import scrape_html
 from cookbook.integration.integration import Integration
-from cookbook.models import Ingredient, Keyword, Recipe, Step
+from cookbook.models import Ingredient, Recipe, Step
 
 
 class CookBookApp(Integration):
@@ -23,7 +20,9 @@ class CookBookApp(Integration):
     def get_recipe_from_file(self, file):
         recipe_html = file.getvalue().decode("utf-8")
 
-        recipe_json, recipe_tree, html_data, images = get_recipe_from_source(recipe_html, 'CookBookApp', self.request)
+        scrape = scrape_html(html=recipe_html, org_url="https://cookbookapp.import", supported_only=False)
+        recipe_json = get_from_scraper(scrape, self.request)
+        images = list(dict.fromkeys(get_images_from_soup(scrape.soup, None)))
 
         recipe = Recipe.objects.create(
             name=recipe_json['name'].strip(),
@@ -32,7 +31,7 @@ class CookBookApp(Integration):
 
         try:
             recipe.servings = re.findall('([0-9])+', recipe_json['recipeYield'])[0]
-        except Exception as e:
+        except Exception:
             pass
 
         try:
@@ -41,7 +40,9 @@ class CookBookApp(Integration):
         except Exception:
             pass
 
-        step = Step.objects.create(instruction=recipe_json['recipeInstructions'], space=self.request.space, )
+        # assuming import files only contain single step
+        step = Step.objects.create(instruction=recipe_json['steps'][0]['instruction'], space=self.request.space,
+                                   show_ingredients_table=self.request.user.userpreference.show_step_ingredients, )
 
         if 'nutrition' in recipe_json:
             step.instruction = step.instruction + '\n\n' + recipe_json['nutrition']
@@ -50,17 +51,21 @@ class CookBookApp(Integration):
         recipe.steps.add(step)
 
         ingredient_parser = IngredientParser(self.request, True)
-        for ingredient in recipe_json['recipeIngredient']:
-            f = ingredient_parser.get_food(ingredient['ingredient']['text'])
-            u = ingredient_parser.get_unit(ingredient['unit']['text'])
+        for ingredient in recipe_json['steps'][0]['ingredients']:
+            f = ingredient_parser.get_food(ingredient['food']['name'])
+            u = None
+            if unit := ingredient.get('unit', None):
+                u = ingredient_parser.get_unit(unit.get('name', None))
             step.ingredients.add(Ingredient.objects.create(
-                food=f, unit=u, amount=ingredient['amount'], note=ingredient['note'],  space=self.request.space,
+                food=f, unit=u, amount=ingredient.get('amount', None), note=ingredient.get('note', None), original_text=ingredient.get('original_text', None), space=self.request.space,
             ))
 
         if len(images) > 0:
             try:
-                response = requests.get(images[0])
-                self.import_recipe_image(recipe, BytesIO(response.content))
+                url = images[0]
+                if validate_import_url(url):
+                    response = requests.get(url)
+                    self.import_recipe_image(recipe, BytesIO(response.content))
             except Exception as e:
                 print('failed to import image ', str(e))
 

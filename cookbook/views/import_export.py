@@ -1,16 +1,13 @@
 import re
 import threading
-from io import BytesIO
 
-from django.contrib import messages
 from django.core.cache import cache
-from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, render
-from django.urls import reverse
 from django.utils.translation import gettext as _
 
-from cookbook.forms import ExportForm, ImportExportBase, ImportForm
-from cookbook.helper.permission_helper import group_required, above_space_limit
+from cookbook.forms import ExportForm, ImportExportBase
+from cookbook.helper.permission_helper import group_required
 from cookbook.helper.recipe_search import RecipeSearch
 from cookbook.integration.cheftap import ChefTap
 from cookbook.integration.chowdown import Chowdown
@@ -31,9 +28,11 @@ from cookbook.integration.plantoeat import Plantoeat
 from cookbook.integration.recettetek import RecetteTek
 from cookbook.integration.recipekeeper import RecipeKeeper
 from cookbook.integration.recipesage import RecipeSage
+from cookbook.integration.rezeptsuitede import Rezeptsuitede
 from cookbook.integration.rezkonv import RezKonv
 from cookbook.integration.saffron import Saffron
-from cookbook.models import ExportLog, ImportLog, Recipe, UserPreference
+from cookbook.integration.gourmet import Gourmet
+from cookbook.models import ExportLog, Recipe
 from recipes import settings
 
 
@@ -80,42 +79,10 @@ def get_integration(request, export_type):
         return MelaRecipes(request, export_type)
     if export_type == ImportExportBase.COOKMATE:
         return Cookmate(request, export_type)
-
-
-@group_required('user')
-def import_recipe(request):
-    limit, msg = above_space_limit(request.space)
-    if limit:
-        messages.add_message(request, messages.WARNING, msg)
-        return HttpResponseRedirect(reverse('index'))
-
-    if request.method == "POST":
-        form = ImportForm(request.POST, request.FILES)
-        if form.is_valid() and request.FILES != {}:
-            try:
-                integration = get_integration(request, form.cleaned_data['type'])
-
-                il = ImportLog.objects.create(type=form.cleaned_data['type'], created_by=request.user, space=request.space)
-                files = []
-                for f in request.FILES.getlist('files'):
-                    files.append({'file': BytesIO(f.read()), 'name': f.name})
-                t = threading.Thread(target=integration.do_import, args=[files, il, form.cleaned_data['duplicates']])
-                t.setDaemon(True)
-                t.start()
-
-                return JsonResponse({'import_id': il.pk})
-            except NotImplementedError:
-                return JsonResponse(
-                    {
-                        'error': True,
-                        'msg': _('Importing is not implemented for this provider')
-                    },
-                    status=400
-                )
-    else:
-        form = ImportForm()
-
-    return render(request, 'import.html', {'form': form})
+    if export_type == ImportExportBase.REZEPTSUITEDE:
+        return Rezeptsuitede(request, export_type)
+    if export_type == ImportExportBase.GOURMET:
+        return Gourmet(request, export_type)
 
 
 @group_required('user')

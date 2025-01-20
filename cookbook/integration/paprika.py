@@ -5,6 +5,9 @@ import re
 from gettext import gettext as _
 from io import BytesIO
 
+import requests
+
+from cookbook.helper.HelperFunctions import validate_import_url
 from cookbook.helper.ingredient_parser import IngredientParser
 from cookbook.helper.recipe_url_import import parse_servings, parse_servings_text
 from cookbook.integration.integration import Integration
@@ -27,7 +30,7 @@ class Paprika(Integration):
                 recipe.description = '' if len(recipe_json['description'].strip()) > 500 else recipe_json['description'].strip()
 
             try:
-                if 'servings' in recipe_json['servings']:
+                if 'servings' in recipe_json:
                     recipe.servings = parse_servings(recipe_json['servings'])
                     recipe.servings_text = parse_servings_text(recipe_json['servings'])
 
@@ -55,7 +58,7 @@ class Paprika(Integration):
                 pass
 
             step = Step.objects.create(
-                instruction=instructions, space=self.request.space,
+                instruction=instructions, space=self.request.space, show_ingredients_table=self.request.user.userpreference.show_step_ingredients,
             )
 
             if 'description' in recipe_json and len(recipe_json['description'].strip()) > 500:
@@ -81,7 +84,24 @@ class Paprika(Integration):
 
             recipe.steps.add(step)
 
-            if recipe_json.get("photo_data", None):
-                self.import_recipe_image(recipe, BytesIO(base64.b64decode(recipe_json['photo_data'])), filetype='.jpeg')
+            # Paprika exports can have images in either of image_url, or photo_data.
+            # If a user takes an image himself, only photo_data will be set.
+            # If a user imports an image, both will be set. But the photo_data will be a center-cropped square resized version, so the image_url is preferred.
+            
+            # Try to download image if possible
+            try:
+                if recipe_json.get("image_url", None):
+                    url = recipe_json.get("image_url", None)
+                    if validate_import_url(url):
+                        response = requests.get(url)
+                        if response.status_code == 200 and len(response.content) > 0:
+                            self.import_recipe_image(recipe, BytesIO(response.content))
+            except Exception:
+                pass
+
+            # If no image downloaded, try to extract from photo_data
+            if not recipe.image:
+                if recipe_json.get("photo_data", None):
+                    self.import_recipe_image(recipe, BytesIO(base64.b64decode(recipe_json['photo_data'])), filetype='.jpeg')
 
             return recipe

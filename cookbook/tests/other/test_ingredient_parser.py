@@ -1,7 +1,11 @@
+from django.contrib import auth
+from django.test import RequestFactory
+from django_scopes import scope
+
 from cookbook.helper.ingredient_parser import IngredientParser
 
 
-def test_ingredient_parser():
+def test_ingredient_parser(u1_s1):
     expectations = {
         "2¼ l Wasser": (2.25, "l", "Wasser", ""),
         "3¼l Wasser": (3.25, "l", "Wasser", ""),
@@ -40,10 +44,10 @@ def test_ingredient_parser():
         "1 small sprig of fresh rosemary": (1, "small", "sprig of fresh rosemary", ""),
         # does not always work perfectly!
         "75 g fresh breadcrumbs": (75, "g", "fresh breadcrumbs", ""),
-        "4 acorn squash , or onion squash (600-800g)": (4, "acorn", "squash , or onion squash", "600-800g"),
+        "4 acorn squash , or onion squash (600-800g)": (4, "acorn", "squash, or onion squash", "600-800g"),
         "1 x 250 g packet of cooked mixed grains , such as spelt and wild rice": (
             1, "x", "250 g packet of cooked mixed grains", "such as spelt and wild rice"),
-        "1 big bunch of fresh mint , (60g)": (1, "big", "bunch of fresh mint ,", "60g"),
+        "1 big bunch of fresh mint , (60g)": (1, "big", "bunch of fresh mint,", "60g"),
         "1 large red onion": (1, "large", "red onion", ""),
         # "2-3 TL Curry": (), # idk what it should use here either
         "1 Zwiebel gehackt": (1, "Zwiebel", "gehackt", ""),
@@ -54,29 +58,40 @@ def test_ingredient_parser():
         "3,5 l Wasser": (3.5, "l", "Wasser", ""),
         "3.5 l Wasser": (3.5, "l", "Wasser", ""),
         "400 g Karotte(n)": (400, "g", "Karotte(n)", ""),
-        "400g unsalted butter": (400, "g", "butter", "unsalted"),
+        "400g unsalted butter": (400, "g", "unsalted butter", ""),
         "2L Wasser": (2, "L", "Wasser", ""),
         "1 (16 ounce) package dry lentils, rinsed": (1, "package", "dry lentils, rinsed", "16 ounce"),
         "2-3 c Water": (2, "c", "Water", "2-3"),
         "Pane (raffermo o secco) 80 g": (80, "g", "Pane", "raffermo o secco"),
         "1 Knoblauchzehe(n), gehackt oder gepresst": (1.0, None, 'Knoblauchzehe(n)', 'gehackt oder gepresst'),
+        "1 Porreestange(n) , ca. 200 g": (1.0, None, 'Porreestange(n)', 'ca. 200 g'),  # leading space before comma
         # test for over long food entries to get properly split into the note field
         "1 Lorem ipsum dolor sit amet consetetur sadipscing elitr sed diam nonumy eirmod tempor invidunt ut l Lorem ipsum dolor sit amet consetetur sadipscing elitr sed diam nonumy eirmod tempor invidunt ut l": (
             1.0, 'Lorem', 'ipsum', 'dolor sit amet consetetur sadipscing elitr sed diam nonumy eirmod tempor invidunt ut l Lorem ipsum dolor sit amet consetetur sadipscing elitr sed diam nonumy eirmod tempor invidunt ut l'),
         "1 LoremipsumdolorsitametconsetetursadipscingelitrseddiamnonumyeirmodtemporinviduntutlLoremipsumdolorsitametconsetetursadipscingelitrseddiamnonumyeirmodtemporinviduntutl": (
-        1.0, None, 'LoremipsumdolorsitametconsetetursadipscingelitrseddiamnonumyeirmodtemporinviduntutlLoremipsumdolorsitametconsetetursadipscingeli',
-        'LoremipsumdolorsitametconsetetursadipscingelitrseddiamnonumyeirmodtemporinviduntutlLoremipsumdolorsitametconsetetursadipscingelitrseddiamnonumyeirmodtemporinviduntutl')
+            1.0, None, 'LoremipsumdolorsitametconsetetursadipscingelitrseddiamnonumyeirmodtemporinviduntutlLoremipsumdolorsitametconsetetursadipscingeli',
+            'LoremipsumdolorsitametconsetetursadipscingelitrseddiamnonumyeirmodtemporinviduntutlLoremipsumdolorsitametconsetetursadipscingelitrseddiamnonumyeirmodtemporinviduntutl'),
+        "砂糖 50g": (50, "g", "砂糖", ""),
+        "卵 4個": (4, "個", "卵", "")
 
     }
     # for German you could say that if an ingredient does not have
     # an amount # and it starts with a lowercase letter, then that
     # is a unit ("etwas", "evtl.") does not apply to English tho
 
-    ingredient_parser = IngredientParser(None, False, ignore_automations=True)
+    # TODO maybe add/improve support for weired stuff like this https://www.rainbownourishments.com/vegan-lemon-tart/#recipe
+
+    user = auth.get_user(u1_s1)
+    space = user.userspace_set.first().space
+    request = RequestFactory()
+    request.user = user
+    request.space = space
+    ingredient_parser = IngredientParser(request, False, ignore_automations=True)
 
     count = 0
-    for key, val in expectations.items():
-        count += 1
-        parsed = ingredient_parser.parse(key)
-        print(f'testing if {key} becomes {val}')
-        assert parsed == val
+    with scope(space=space):
+        for key, val in expectations.items():
+            count += 1
+            parsed = ingredient_parser.parse(key)
+            print(f'testing if {key} becomes {val}')
+            assert parsed == val

@@ -1,15 +1,19 @@
+import inspect
+
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import user_passes_test
-from django.core.cache import caches
-from django.core.exceptions import ValidationError
+from django.core.cache import cache
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.http import HttpResponseRedirect
 from django.urls import reverse, reverse_lazy
 from django.utils.translation import gettext as _
+from oauth2_provider.contrib.rest_framework import TokenHasReadWriteScope, TokenHasScope
+from oauth2_provider.models import AccessToken
 from rest_framework import permissions
 from rest_framework.permissions import SAFE_METHODS
 
-from cookbook.models import ShareLink, Recipe, UserPreference
+from cookbook.models import Recipe, ShareLink, UserSpace
 
 
 def get_allowed_groups(groups_required):
@@ -27,11 +31,12 @@ def get_allowed_groups(groups_required):
     return groups_allowed
 
 
-def has_group_permission(user, groups):
+def has_group_permission(user, groups, no_cache=False):
     """
     Tests if a given user is member of a certain group (or any higher group)
     Superusers always bypass permission checks.
     Unauthenticated users can't be member of any group thus always return false.
+    :param no_cache: (optional) do not return cached results, always check agains DB
     :param user: django auth user object
     :param groups: list or tuple of groups the user should be checked for
     :return: True if user is in allowed groups, false otherwise
@@ -39,10 +44,23 @@ def has_group_permission(user, groups):
     if not user.is_authenticated:
         return False
     groups_allowed = get_allowed_groups(groups)
+
+    CACHE_KEY = hash((inspect.stack()[0][3], (user.pk, user.username, user.email), groups_allowed))
+    if not no_cache:
+        cached_result = cache.get(CACHE_KEY, default=None)
+        if cached_result is not None:
+            return cached_result
+
+    result = False
     if user.is_authenticated:
-        if bool(user.groups.filter(name__in=groups_allowed)):
-            return True
-    return False
+        if user_space := user.userspace_set.filter(active=True):
+            if len(user_space) != 1:
+                result = False  # do not allow any group permission if more than one space is active, needs to be changed when simultaneous multi-space-tenancy is added
+            elif bool(user_space.first().groups.filter(name__in=groups_allowed)):
+                result = True
+
+    cache.set(CACHE_KEY, result, timeout=10)
+    return result
 
 
 def is_object_owner(user, obj):
@@ -50,7 +68,6 @@ def is_object_owner(user, obj):
     Tests if a given user is the owner of a given object
     test performed by checking user against the objects user
     and create_by field (if exists)
-    superusers bypass all checks, unauthenticated users cannot own anything
     :param user django auth user object
     :param obj any object that should be tested
     :return: true if user is owner of object, false otherwise
@@ -58,7 +75,22 @@ def is_object_owner(user, obj):
     if not user.is_authenticated:
         return False
     try:
-        return obj.get_owner() == user
+        return obj.get_owner() == 'orphan' or obj.get_owner() == user
+    except Exception:
+        return False
+
+
+def is_space_owner(user, obj):
+    """
+    Tests if a given user is the owner the space of a given object
+    :param user django auth user object
+    :param obj any object that should be tested
+    :return: true if user is owner of the objects space, false otherwise
+    """
+    if not user.is_authenticated:
+        return False
+    try:
+        return obj.get_space().get_owner() == user
     except Exception:
         return False
 
@@ -67,7 +99,6 @@ def is_object_shared(user, obj):
     """
     Tests if a given user is shared for a given object
     test performed by checking user against the objects shared table
-    superusers bypass all checks, unauthenticated users cannot own anything
     :param user django auth user object
     :param obj any object that should be tested
     :return: true if user is shared for object, false otherwise
@@ -88,15 +119,15 @@ def share_link_valid(recipe, share):
     """
     try:
         CACHE_KEY = f'recipe_share_{recipe.pk}_{share}'
-        if c := caches['default'].get(CACHE_KEY, False):
+        if c := cache.get(CACHE_KEY, False):
             return c
 
         if link := ShareLink.objects.filter(recipe=recipe, uuid=share, abuse_blocked=False).first():
-            if 0 < settings.SHARING_LIMIT < link.request_count:
+            if 0 < settings.SHARING_LIMIT < link.request_count and not link.space.no_sharing_limit:
                 return False
             link.request_count += 1
             link.save()
-            caches['default'].set(CACHE_KEY, True, timeout=3)
+            cache.set(CACHE_KEY, True, timeout=3)
             return True
         return False
     except ValidationError:
@@ -163,7 +194,7 @@ class OwnerRequiredMixin(object):
 
         try:
             obj = self.get_object()
-            if obj.get_space() != request.space:
+            if not request.user.userspace.filter(space=obj.get_space()).exists():
                 messages.add_message(request, messages.ERROR,
                                      _('You do not have the required permissions to view this page!'))
                 return HttpResponseRedirect(reverse_lazy('index'))
@@ -181,13 +212,35 @@ class CustomIsOwner(permissions.BasePermission):
     verifies user has ownership over object
     (either user or created_by or user is request user)
     """
-    message = _('You cannot interact with this object as it is not owned by you!')  # noqa: E501
+    message = _('You cannot interact with this object as it is not owned by you!')
 
     def has_permission(self, request, view):
         return request.user.is_authenticated
 
     def has_object_permission(self, request, view, obj):
         return is_object_owner(request.user, obj)
+
+
+class CustomIsOwnerReadOnly(CustomIsOwner):
+    def has_permission(self, request, view):
+        return super().has_permission(request, view) and request.method in SAFE_METHODS
+
+    def has_object_permission(self, request, view, obj):
+        return super().has_object_permission(request, view) and request.method in SAFE_METHODS
+
+
+class CustomIsSpaceOwner(permissions.BasePermission):
+    """
+    Custom permission class for django rest framework views
+    verifies if the user is the owner of the space the object belongs to
+    """
+    message = _('You cannot interact with this object as it is not owned by you!')
+
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.space.created_by == request.user
+
+    def has_object_permission(self, request, view, obj):
+        return is_space_owner(request.user, obj)
 
 
 # TODO function duplicate/too similar name
@@ -202,9 +255,6 @@ class CustomIsShared(permissions.BasePermission):
         return request.user.is_authenticated
 
     def has_object_permission(self, request, view, obj):
-        # # temporary hack to make old shopping list work with new shopping list
-        # if obj.__class__.__name__ in ['ShoppingList', 'ShoppingListEntry']:
-        #     return is_object_shared(request.user, obj) or obj.created_by in list(request.user.get_shopping_share())
         return is_object_shared(request.user, obj)
 
 
@@ -261,6 +311,75 @@ class CustomIsShare(permissions.BasePermission):
         return False
 
 
+class CustomRecipePermission(permissions.BasePermission):
+    """
+    Custom permission class for recipe api endpoint
+    """
+    message = _('You do not have the required permissions to view this page!')
+
+    def has_permission(self, request, view):  # user is either at least a guest or a share link is given and the request is safe
+        share = request.query_params.get('share', None)
+        return ((has_group_permission(request.user, ['guest']) and request.method in SAFE_METHODS) or has_group_permission(
+            request.user, ['user'])) or (share and request.method in SAFE_METHODS and 'pk' in view.kwargs)
+
+    def has_object_permission(self, request, view, obj):
+        share = request.query_params.get('share', None)
+        if share:
+            return share_link_valid(obj, share)
+        else:
+            if obj.private:
+                return ((obj.created_by == request.user) or (request.user in obj.shared.all())) and obj.space == request.space
+            else:
+                return ((has_group_permission(request.user, ['guest']) and request.method in SAFE_METHODS)
+                        or has_group_permission(request.user, ['user'])) and obj.space == request.space
+
+
+class CustomUserPermission(permissions.BasePermission):
+    """
+    Custom permission class for user api endpoint
+    """
+    message = _('You do not have the required permissions to view this page!')
+
+    def has_permission(self, request, view):  # a space filtered user list is visible for everyone
+        return has_group_permission(request.user, ['guest'])
+
+    def has_object_permission(self, request, view, obj):  # object write permissions are only available for user
+        if request.method in SAFE_METHODS and 'pk' in view.kwargs and has_group_permission(request.user, ['guest']) and request.space in obj.userspace_set.all():
+            return True
+        elif request.user == obj:
+            return True
+        else:
+            return False
+
+
+class CustomTokenHasScope(TokenHasScope):
+    """
+    Custom implementation of Django OAuth Toolkit TokenHasScope class
+    Only difference: if any other authentication method except OAuth2Authentication is used the scope check is ignored
+    IMPORTANT: do not use this class without any other permission class as it will not check anything besides token scopes
+    """
+
+    def has_permission(self, request, view):
+        if isinstance(request.auth, AccessToken):
+            return super().has_permission(request, view)
+        else:
+            return request.user.is_authenticated
+
+
+class CustomTokenHasReadWriteScope(TokenHasReadWriteScope):
+    """
+    Custom implementation of Django OAuth Toolkit TokenHasReadWriteScope class
+    Only difference: if any other authentication method except OAuth2Authentication is used the scope check is ignored
+    IMPORTANT: do not use this class without any other permission class as it will not check anything besides token scopes
+    """
+
+    def has_permission(self, request, view):
+        if isinstance(request.auth, AccessToken):
+            return super().has_permission(request, view)
+        else:
+            return True
+
+
 def above_space_limit(space):  # TODO add file storage limit
     """
     Test if the space has reached any limit (e.g. max recipes, users, ..)
@@ -290,7 +409,34 @@ def above_space_user_limit(space):
     :param space: Space to test for limits
     :return: Tuple (True if above or equal limit else false, message)
     """
-    limit = space.max_users != 0 and UserPreference.objects.filter(space=space).count() > space.max_users
+    limit = space.max_users != 0 and UserSpace.objects.filter(space=space).count() > space.max_users
     if limit:
         return True, _('You have more users than allowed in your space.')
     return False, ''
+
+
+def switch_user_active_space(user, space):
+    """
+    Switch the currently active space of a user by setting all spaces to inactive and activating the one passed
+    :param user: user to change active space for
+    :param space: space to activate user for
+    :return user space object or none if not found/no permission
+    """
+    try:
+        us = UserSpace.objects.get(space=space, user=user)
+        if not us.active:
+            UserSpace.objects.filter(user=user).update(active=False)
+            us.active = True
+            us.save()
+            return us
+        else:
+            return us
+    except ObjectDoesNotExist:
+        return None
+
+
+class IsReadOnlyDRF(permissions.BasePermission):
+    message = 'You cannot interact with this object as it is not owned by you!'
+
+    def has_permission(self, request, view):
+        return request.method in SAFE_METHODS

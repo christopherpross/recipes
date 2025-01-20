@@ -14,8 +14,9 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+import traceback
+
 from django.conf import settings
-from django.conf.urls import url
 from django.contrib import admin
 from django.urls import include, path, re_path
 from django.views.i18n import JavaScriptCatalog
@@ -34,9 +35,24 @@ urlpatterns = [
     ),
 ]
 
+if settings.DEBUG:
+    urlpatterns += path('__debug__/', include('debug_toolbar.urls')),
+
 if settings.ENABLE_METRICS:
-    urlpatterns += url('', include('django_prometheus.urls')),
+    urlpatterns += re_path('', include('django_prometheus.urls')),
 
 if settings.GUNICORN_MEDIA or settings.DEBUG:
     urlpatterns += re_path(r'^media/(?P<path>.*)$', serve, {'document_root': settings.MEDIA_ROOT}),
     urlpatterns += re_path(r'^jsreverse.json$', reverse_views.urls_js, name='js_reverse'),
+
+for p in settings.PLUGINS:
+    try:
+        urlpatterns += path(p['base_url'], include(f'{p["module"]}.urls')),
+    except ModuleNotFoundError as e:
+        if settings.DEBUG:
+            print(e.msg)
+            print(f'ERROR failed loading plugin <{p["name"]}> urls, did you forget creating urls.py in your plugin?')
+    except Exception:
+        if settings.DEBUG:
+            print(f'ERROR failed loading urls for plugin <{p["name"]}>')
+            traceback.format_exc()

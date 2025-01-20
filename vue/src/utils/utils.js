@@ -14,6 +14,7 @@ import {BToast} from "bootstrap-vue"
 // * */
 import Vue from "vue"
 import {Actions, Models} from "./models"
+import moment from "moment";
 
 export const ToastMixin = {
     name: "ToastMixin",
@@ -49,8 +50,9 @@ export class StandardToasts {
     static FAIL_DELETE_PROTECTED = "FAIL_DELETE_PROTECTED"
     static FAIL_MOVE = "FAIL_MOVE"
     static FAIL_MERGE = "FAIL_MERGE"
+    static FAIL_IMPORT = "FAIL_IMPORT"
 
-    static makeStandardToast(context, toast, err) {
+    static makeStandardToast(context, toast, err = undefined, always_show_errors = false) {
         let title = ''
         let msg = ''
         let variant = ''
@@ -121,18 +123,33 @@ export class StandardToasts {
                 title = i18n.tc("Failure")
                 msg = i18n.tc("err_merging_resource")
                 break
+            case StandardToasts.FAIL_IMPORT:
+                variant = 'danger'
+                title = i18n.tc("Failure")
+                msg = i18n.tc("err_importing_recipe")
+                break
         }
 
 
-        let DEBUG = localStorage.getItem("DEBUG") === "True" || false
+        let DEBUG = (localStorage.getItem("DEBUG") === "True" || always_show_errors) && variant !== 'success'
+        if (DEBUG){
+            console.log('ERROR ', err, JSON.stringify(err?.response?.data))
+            console.trace();
+        }
 
-        if (err !== undefined && 'response' in err && 'headers' in err.response) {
-            if (DEBUG && err.response.headers['content-type'] === 'application/json' && err.response.status < 500) {
-                console.log('ERROR ', JSON.stringify(err.response.data))
+        if (err !== undefined 
+            && 'response' in err 
+            && 'headers' in err.response 
+            && err.response.headers['content-type'] === 'application/json' 
+            && err.response.status < 500 
+            && err.response.data) {
+            // If the backend provides us with a nice error message, we print it, regardless of DEBUG mode
+            if (DEBUG || err.response.data.msg) {
+                const errMsg = err.response.data.msg ? err.response.data.msg : JSON.stringify(err.response.data) 
                 msg = context.$createElement('div', {}, [
                     context.$createElement('span', {}, [msg]),
                     context.$createElement('br', {}, []),
-                    context.$createElement('code', {'class': 'mt-2'}, [JSON.stringify(err.response.data)])
+                    context.$createElement('code', {'class': 'mt-2'}, [errMsg])
                 ])
             }
         }
@@ -225,17 +242,22 @@ export const ResolveUrlMixin = {
 }
 
 export function resolveDjangoUrl(url, params = null) {
+    let fun = window.Urls[url];
+    if (typeof fun !== 'function') {
+        console.error(`window.Urls[${url}] is not a function: ${fun}`);
+	return
+    }
     if (params == null) {
-        return window.Urls[url]()
+        return fun()
     } else if (typeof params != "object") {
-        return window.Urls[url](params)
+        return fun(params)
     } else if (typeof params == "object") {
         if (params.length === 1) {
-            return window.Urls[url](params)
+            return fun(params)
         } else if (params.length === 2) {
-            return window.Urls[url](params[0], params[1])
+            return fun(params[0], params[1])
         } else if (params.length === 3) {
-            return window.Urls[url](params[0], params[1], params[2])
+            return fun(params[0], params[1], params[2])
         }
     }
 }
@@ -280,7 +302,7 @@ export function getUserPreference(pref = undefined) {
 export function calculateAmount(amount, factor) {
     if (getUserPreference("use_fractions")) {
         let return_string = ""
-        let fraction = frac(amount * factor, 10, true)
+        let fraction = frac(amount * factor, 16, true)
 
         if (fraction[0] === 0 && fraction[1] === 0 && fraction[2] === 1) {
             return roundDecimals(amount * factor)
@@ -300,9 +322,34 @@ export function calculateAmount(amount, factor) {
     }
 }
 
+/* Replace spaces by dashes, then use DOM method to escape special characters. Use for dynamically generated CSS classes*/
+export const EscapeCSSMixin = {
+    methods: {
+        escapeCSS: function(classname) {
+            return CSS.escape(classname.replace(/\s+/g, "-").toLowerCase())
+        }
+    }
+}
+
 export function roundDecimals(num) {
     let decimals = getUserPreference("user_fractions") ? getUserPreference("user_fractions") : 2
     return +(Math.round(num + `e+${decimals}`) + `e-${decimals}`)
+}
+
+export function calculateHourMinuteSplit(amount) {
+    if (amount >= 60) {
+        let hours = Math.floor(amount / 60)
+        let minutes = amount - hours * 60
+        let output_text = hours + " h"
+
+        if (minutes > 0) {
+            output_text += " " + minutes + " min"
+        }
+
+        return output_text
+    } else {
+        return amount + " min"
+    }
 }
 
 const KILOJOULES_PER_CALORIE = 4.18
@@ -332,6 +379,23 @@ export function energyHeading() {
     }
 }
 
+export const FormatMixin = {
+    name: "FormatMixin",
+    methods: {
+        /**
+         * format short date from datetime
+         * @param datetime any string that can be parsed by Date.parse()
+         * @return {string}
+         */
+        formatDate: function (datetime) {
+            return Intl.DateTimeFormat(window.navigator.language, {
+                dateStyle: "short",
+            }).format(Date.parse(datetime))
+        },
+    },
+}
+
+
 axios.defaults.xsrfCookieName = "csrftoken"
 axios.defaults.xsrfHeaderName = "X-CSRFTOKEN"
 
@@ -343,6 +407,7 @@ export const ApiMixin = {
         }
     },
     methods: {
+        // if passing parameters that are not part of the official schema of the endpoint use parameter: options: {query: {simple: 1}}
         genericAPI: function (model, action, options) {
             let setup = getConfig(model, action)
             if (setup?.config?.function) {
@@ -351,6 +416,9 @@ export const ApiMixin = {
             let func = setup.function
             let parameters = buildParams(options, setup)
             let apiClient = new ApiApiFactory()
+            if (model.apiClient !== undefined) {
+                apiClient = model.apiClient
+            }
             return apiClient[func](...parameters)
         },
         genericGetAPI: function (url, options) {
@@ -699,6 +767,16 @@ const specialCases = {
 export const formFunctions = {
     FoodCreateDefault: function (form) {
         form.fields.filter((x) => x.field === "inherit_fields")[0].value = getUserPreference("food_inherit_default")
+        return form
+    },
+    InviteLinkDefaultValid: function (form){
+        form.fields.filter((x) => x.field === "valid_until")[0].value = moment().add(7, "days").format('yyyy-MM-DD')
+        return form
+    },
+    AutomationOrderDefault: function (form) {
+        if (form.fields.filter((x) => x.field === "order")[0].value === undefined) {
+            form.fields.filter((x) => x.field === "order")[0].value = 1000
+        }
         return form
     },
 }

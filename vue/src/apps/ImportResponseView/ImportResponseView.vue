@@ -22,7 +22,7 @@
                                     }}!
                                 </b-badge>
                                 <b-badge variant="primary" v-else class="float-right">
-                                    {{ $t('Import_running') }}
+                                    {{ $t('import_running') }}
                                     <b-spinner small class="d-inline-block"></b-spinner>
                                 </b-badge>
                             </h4>
@@ -69,7 +69,9 @@
                                            v-if="recipe.imported !== undefined && recipe.imported"
                                            target="_blank">{{
                                                 recipe.recipe_name
-                                            }}</a> <span v-else>{{ recipe.recipe_name }}</span>
+                                            }}</a> <a target="_blank"
+                                                      :href="`${resolveDjangoUrl('view_search') }?query=${recipe.recipe_name}`"
+                                                      v-else>{{ recipe.recipe_name }}</a>
                                         <b-badge class="float-right text-white">{{ index + 1 }}</b-badge>
                                     </h5>
                                     <p class="mb-0">
@@ -143,7 +145,7 @@
                                 <b-card>
                                     <textarea id="id_textarea" ref="output_text" class="form-control"
                                               style="height: 50vh"
-                                              v-html="import_info.msg"
+                                              v-html="$sanitize(import_info.msg)"
                                               disabled></textarea>
                                 </b-card>
                             </b-collapse>
@@ -168,7 +170,9 @@ import {ResolveUrlMixin, ToastMixin, RandomIconMixin} from "@/utils/utils";
 import LoadingSpinner from "@/components/LoadingSpinner";
 
 import {ApiApiFactory} from "@/utils/openapi/api.ts";
+import VueSanitize from "vue-sanitize";
 
+Vue.use(VueSanitize);
 Vue.use(BootstrapVue)
 
 export default {
@@ -210,16 +214,19 @@ export default {
                 }
                 if (out.info !== '') {
                     let items = out.info.split(/:(.*)/s)[1]
-                    items = items.split(",")
-                    out.duplicates_total = items.length
-                    out.recipes.forEach((recipe) => {
-                        recipe.imported = true
-                        items.forEach((item) => {
-                            if (recipe.recipe_name === item.trim()) {
-                                recipe.imported = false
-                            }
+                    if (items !== undefined) {
+                        items = items.split(",")
+                        out.duplicates_total = items.length
+                        out.recipes.forEach((recipe) => {
+                            recipe.imported = true
+                            items.forEach((item) => {
+                                if (recipe.recipe_name === item.trim()) {
+                                    recipe.imported = false
+                                }
+                            })
                         })
-                    })
+                    }
+
                 } else {
                     if (out.imported_total > 0) {
                         out.recipes.forEach((recipe) => {

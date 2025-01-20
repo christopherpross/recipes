@@ -23,6 +23,9 @@
                     <b-card-body class="m-0 py-0">
                         <b-card-text class="h-100 my-0 d-flex flex-column" style="text-overflow: ellipsis">
                             <h5 class="m-0 mt-1 text-truncate">{{ item[title] }}</h5>
+
+                                <div v-if="item[plural]!== '' && item[plural] !== null && item[plural] !== undefined" class="m-0 text-truncate">({{ $t("plural_short") }}: {{ item[plural] }})</div>
+
                             <div class="m-0 text-truncate">{{ item[subtitle] }}</div>
                             <div class="m-0 text-truncate small text-muted" v-if="getFullname">{{ getFullname }}</div>
 
@@ -71,7 +74,10 @@
         <!-- recursively add child cards -->
         <div class="row" v-if="item.show_children">
             <div class="col-md-10 offset-md-2">
-                <generic-horizontal-card v-for="child in item[children]" v-bind:key="child.id" :item="child" :model="model" @item-action="$emit('item-action', $event)"> </generic-horizontal-card>
+                <generic-horizontal-card v-for="child in item[children]"
+                                         v-bind:key="child.id" 
+                                         :item="child" :model="model"
+                                         @item-action="$emit('item-action', $event)"></generic-horizontal-card>
             </div>
         </div>
         <!-- conditionally view recipes -->
@@ -93,7 +99,7 @@
                 "
             >
                 <i class="fas fa-expand-arrows-alt fa-fw"></i> <b>{{ $t("Move") }}</b
-                >: <span v-html="$t('move_confirmation', { child: source.name, parent: item.name })"></span>
+                >: <span v-html="$t('move_confirmation', { child: $sanitize(source.name), parent: $sanitize(item.name) })"></span>
             </b-list-group-item>
             <b-list-group-item
                 v-if="useMerge"
@@ -104,7 +110,7 @@
                 "
             >
                 <i class="fas fa-compress-arrows-alt fa-fw"></i> <b>{{ $t("Merge") }}</b
-                >: <span v-html="$t('merge_confirmation', { source: source.name, target: item.name })"></span>
+                >: <span v-html="$t('merge_confirmation', { source: $sanitize(source.name), target: $sanitize(item.name) })"></span>
             </b-list-group-item>
             <b-list-group-item
                 v-if="useMerge"
@@ -115,7 +121,7 @@
                 "
             >
                 <i class="fas fa-robot fa-fw"></i> <b>{{ $t("Merge") }} & {{ $t("Automate") }}</b
-                >: <span v-html="$t('merge_confirmation', { source: source.name, target: item.name })"></span> {{ $t("create_rule") }}
+                >: <span v-html="$t('merge_confirmation', { source: $sanitize(source.name), target: $sanitize(item.name) })"></span> {{ $t("create_rule") }}
                 <b-badge v-b-tooltip.hover :title="$t('warning_feature_beta')">BETA</b-badge>
             </b-list-group-item>
             <b-list-group-item action v-on:click="closeMenu()">
@@ -134,6 +140,9 @@ import RecipeCard from "@/components/RecipeCard"
 import { mixin as clickaway } from "vue-clickaway"
 import { createPopper } from "@popperjs/core"
 import {ApiMixin} from "@/utils/utils";
+import Vue from "vue"
+import VueSanitize from "vue-sanitize";
+Vue.use(VueSanitize);
 
 export default {
     name: "GenericHorizontalCard",
@@ -143,6 +152,7 @@ export default {
         item: { type: Object },
         model: { type: Object },
         title: { type: String, default: "name" }, // this and the following props need to be moved to model.js and made computed values
+        plural: { type: String, default: "plural_name" },
         subtitle: { type: String, default: "description" },
         child_count: { type: String, default: "numchild" },
         children: { type: String, default: "children" },

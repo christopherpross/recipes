@@ -1,139 +1,131 @@
 <template>
-    <tr>
+    <tr class="ingredients__item">
         <template v-if="ingredient.is_header">
-            <td colspan="5" @click="done">
+            <td class="ingredients__header-note header" colspan="5" @click="done">
                 <b>{{ ingredient.note }}</b>
             </td>
         </template>
 
         <template v-else>
-            <td class="d-print-non" v-if="detailed && !show_shopping" @click="done">
-                <i class="far fa-check-circle text-success" v-if="ingredient.checked"></i>
-                <i class="far fa-check-circle text-primary" v-if="!ingredient.checked"></i>
+            <td class="ingredients__check d-print-none align-baseline py-2" v-if="detailed" @click="done">
+                <i class="ingredients__check ingredients__check_checked far fa-check-circle text-success" v-if="ingredient.checked"></i>
+                <i class="ingredients__check ingredients__check_checked_false far fa-check-circle text-primary" v-if="!ingredient.checked"></i>
             </td>
-            <td class="text-nowrap" @click="done">
-                <span v-if="ingredient.amount !== 0" v-html="calculateAmount(ingredient.amount)"></span>
+            <td class="ingredients__amount text-nowrap" @click="done">
+                <span class="ingredients__amount" :class="amountClass" v-if="ingredient.amount !== 0 && !ingredient.no_amount" v-html="amount"></span>
             </td>
-            <td @click="done">
-                <span v-if="ingredient.unit !== null && !ingredient.no_amount">{{ ingredient.unit.name }}</span>
+            <td class="ingredients__unit" @click="done">
+                <span v-if="ingredient.unit !== null && !ingredient.no_amount" :class="unitClass">{{ unitName }}</span>
             </td>
-            <td @click="done">
+            <td class="ingredients__food" :class="foodClass" @click="done">
                 <template v-if="ingredient.food !== null">
-                    <a :href="resolveDjangoUrl('view_recipe', ingredient.food.recipe.id)" v-if="ingredient.food.recipe !== null" target="_blank" rel="noopener noreferrer">{{ ingredient.food.name }}</a>
-                    <span v-if="ingredient.food.recipe === null">{{ ingredient.food.name }}</span>
+                    <a :href="resolveDjangoUrl('view_recipe', ingredient.food.recipe.id)" v-if="ingredient.food.recipe !== null" target="_blank" rel="noopener noreferrer">
+                        {{ foodName }}
+                    </a>
+                    <a :href="ingredient.food.url" v-else-if="ingredient.food.url !== ''" target="_blank" rel="noopener noreferrer">
+                        {{ foodName }}</a>
+                    <template v-else>
+                        <span :class="foodClass">{{ foodName }}</span>
+                    </template>
                 </template>
             </td>
-            <td v-if="detailed && !show_shopping">
-                <div v-if="ingredient.note">
-                    <span v-b-popover.hover="ingredient.note" class="d-print-none touchable p-0 pl-md-2 pr-md-2">
+            <td v-if="detailed" class="ingredients__note align-baseline">
+                <template v-if="ingredient.note">
+                    <span class="ingredients__note ingredients__note_hover d-print-none touchable py-0 px-2" v-b-popover.hover="ingredient.note">
                         <i class="far fa-comment"></i>
                     </span>
 
-                    <div class="d-none d-print-block"><i class="far fa-comment-alt d-print-none"></i> {{ ingredient.note }}</div>
-                </div>
-            </td>
-            <td v-else-if="show_shopping" class="text-right text-nowrap">
-                <shopping-badge v-if="ingredient.food.ignore_shopping" :item="shoppingBadgeFood" />
-                <b-button
-                    v-if="!ingredient.food.ignore_shopping"
-                    class="btn text-decoration-none fas fa-shopping-cart px-2 user-select-none"
-                    variant="link"
-                    v-b-popover.hover.click.blur.html.top="{ title: ShoppingPopover, variant: 'outline-dark' }"
-                    :class="{
-                        'text-success': ingredient.shopping_status === true,
-                        'text-muted': ingredient.shopping_status === false,
-                        'text-warning': ingredient.shopping_status === null,
-                    }"
-                />
-                <span v-if="!ingredient.food.ignore_shopping" class="px-2">
-                    <input type="checkbox" class="align-middle" v-model="shop" @change="changeShopping" />
-                </span>
-                <on-hand-badge v-if="!ingredient.food.ignore_shopping" :item="ingredient.food" />
+                    <div class="ingredients__note ingredients__note_print d-none d-print-block"><i class="far fa-comment-alt d-print-none"></i> {{ ingredient.note }}</div>
+                </template>
             </td>
         </template>
     </tr>
 </template>
 
 <script>
-import { calculateAmount, ResolveUrlMixin, ApiMixin } from "@/utils/utils"
-import OnHandBadge from "@/components/Badges/OnHand"
-import ShoppingBadge from "@/components/Badges/Shopping"
+import {calculateAmount, ResolveUrlMixin, EscapeCSSMixin} from "@/utils/utils"
+
+import Vue from "vue"
+import VueSanitize from "vue-sanitize"
+
+Vue.use(VueSanitize)
 
 export default {
     name: "IngredientComponent",
-    components: { OnHandBadge, ShoppingBadge },
     props: {
         ingredient: Object,
-        ingredient_factor: { type: Number, default: 1 },
-        detailed: { type: Boolean, default: true },
-        show_shopping: { type: Boolean, default: false },
+        ingredient_factor: {type: Number, default: 1},
+        detailed: {type: Boolean, default: true},
     },
-    mixins: [ResolveUrlMixin, ApiMixin],
+    mixins: [ResolveUrlMixin, EscapeCSSMixin],
     data() {
         return {
             checked: false,
-            shop: false, // in shopping list for this recipe: boolean
-            dirty: undefined,
         }
     },
-    watch: {
-        ingredient: {
-            handler() {},
-            deep: true,
-        },
-        "ingredient.shop": function (newVal) {
-            this.shop = newVal
-        },
-    },
+    watch: {},
     mounted() {
-        this.shop = this.ingredient?.shop
     },
     computed: {
-        shoppingBadgeFood() {
-            // shopping badge is hidden when ignore_shopping=true.
-            // force true in this context to allow adding to shopping list from recipe view
-            return { ...this.ingredient.food, ignore_shopping: false }
+        amount: function() {
+            return this.$sanitize(calculateAmount(this.ingredient.amount, this.ingredient_factor))
         },
-        ShoppingPopover() {
-            if (this.ingredient?.shopping_status == false) {
-                return this.$t("NotInShopping", { food: this.ingredient.food.name })
+        isScaledUp: function() {
+            return this.ingredient_factor > 1 ? true:false
+        },
+        isScaledDown: function() {
+            return this.ingredient_factor < 1 ? true:false
+        },
+        amountClass: function () {
+            if (this.isScaledDown) {
+                return this.escapeCSS('ingredients__amount_scaled_down')
+            } else if (this.isScaledUp) {
+                return this.escapeCSS('ingredients__amount_scaled_up')
             } else {
-                let category = this.$t("Category") + ": " + this.ingredient?.category ?? this.$t("Undefined")
-                let popover = []
-                ;(this.ingredient?.shopping_list ?? []).forEach((x) => {
-                    popover.push(
-                        [
-                            "<tr style='border-bottom: 1px solid #ccc'>",
-                            "<td style='padding: 3px;'><em>",
-                            x?.mealplan ?? "",
-                            "</em></td>",
-                            "<td style='padding: 3px;'>",
-                            x?.amount ?? "",
-                            "</td>",
-                            "<td style='padding: 3px;'>",
-                            x?.unit ?? "" + "</td>",
-                            "<td style='padding: 3px;'>",
-                            x?.food ?? "",
-                            "</td></tr>",
-                        ].join("")
-                    )
-                })
-                return "<table class='table-small'><th colspan='4'>" + category + "</th>" + popover.join("") + "</table>"
+                return this.escapeCSS('ingredients__amount_scaled_false')
             }
         },
+        isUnitPlural: function () {
+            if (this.ingredient.unit.plural_name === '' || this.ingredient.unit.plural_name === null) {
+                return false
+            } else if (this.ingredient.always_use_plural_unit || this.ingredient.amount * this.ingredient_factor > 1) {
+                return true
+            } else {
+                return false
+            }
+        },
+        isFoodPlural: function () {
+            if (this.ingredient.food.plural_name == null || this.ingredient.food.plural_name === '') {
+                return false
+            }
+            if (this.ingredient.always_use_plural_food) {
+                return true
+            } else if (this.ingredient.no_amount) {
+                return false
+            } else if (this.ingredient.amount * this.ingredient_factor > 1) {
+                return true
+            } else {
+                return false
+            }
+        },
+        unitClass: function () {
+            return this.escapeCSS('_unitname-' + this.ingredient.unit.name)
+        },
+        foodClass: function () {
+            return this.escapeCSS('_foodname-' + this.ingredient.food.name)
+        },
+        unitName: function () {
+            return this.isUnitPlural ? this.ingredient.unit.plural_name : this.ingredient.unit.name
+        },
+        foodName: function () {
+            return this.isFoodPlural ? this.ingredient.food.plural_name : this.ingredient.food.name
+        }
     },
     methods: {
-        calculateAmount: function (x) {
-            return calculateAmount(x, this.ingredient_factor)
-        },
         // sends parent recipe ingredient to notify complete has been toggled
         done: function () {
             this.$emit("checked-state-changed", this.ingredient)
-        },
-        // sends true/false to parent to save all ingredient shopping updates as a batch
-        changeShopping: function () {
-            this.$emit("add-to-shopping", { item: this.ingredient, add: this.shop })
-        },
+        }
     },
 }
 </script>
@@ -141,9 +133,22 @@ export default {
 <style scoped>
 /* increase size of hover/touchable space without changing spacing */
 .touchable {
-    padding-right: 2em;
-    padding-left: 2em;
-    margin-right: -2em;
-    margin-left: -2em;
+    --target-increase: 2em;
+    display: inline-flex;
 }
+
+.touchable::after {
+    content: "";
+    display: inline-block;
+    width: var(--target-increase);
+    margin-right: calc(var(--target-increase) * -1);
+}
+
+.touchable::before {
+    content: "";
+    display: inline-block;
+    width: var(--target-increase);
+    margin-left: calc(var(--target-increase) * -1);
+}
+
 </style>

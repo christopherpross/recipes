@@ -7,6 +7,8 @@ from zipfile import ZipFile
 import requests
 
 from django.utils.translation import gettext as _
+
+from cookbook.helper.HelperFunctions import validate_import_url
 from cookbook.helper.image_processing import get_filetype
 from cookbook.helper.ingredient_parser import IngredientParser
 from cookbook.integration.integration import Integration
@@ -45,7 +47,7 @@ class RecetteTek(Integration):
         if not instructions:
             instructions = ''
 
-        step = Step.objects.create(instruction=instructions, space=self.request.space,)
+        step = Step.objects.create(instruction=instructions, space=self.request.space, show_ingredients_table=self.request.user.userpreference.show_step_ingredients,)
 
         # Append the original import url to the step (if it exists)
         try:
@@ -60,7 +62,7 @@ class RecetteTek(Integration):
             ingredient_parser = IngredientParser(self.request, True)
             for ingredient in file['ingredients'].split('\n'):
                 if len(ingredient.strip()) > 0:
-                    amount, unit, food, note = ingredient_parser.parse(food)
+                    amount, unit, food, note = ingredient_parser.parse(ingredient.strip())
                     f = ingredient_parser.get_food(ingredient)
                     u = ingredient_parser.get_unit(unit)
                     step.ingredients.add(Ingredient.objects.create(
@@ -123,11 +125,13 @@ class RecetteTek(Integration):
                         self.import_recipe_image(recipe, BytesIO(import_zip.read(image_file_name)), filetype=get_filetype(image_file_name))
             else:
                 if file['originalPicture'] != '':
-                    response = requests.get(file['originalPicture'])
-                    if imghdr.what(BytesIO(response.content)) is not None:
-                        self.import_recipe_image(recipe, BytesIO(response.content), filetype=get_filetype(file['originalPicture']))
-                    else:
-                        raise Exception("Original image failed to download.")
+                    url = file['originalPicture']
+                    if validate_import_url(url):
+                        response = requests.get(url)
+                        if imghdr.what(BytesIO(response.content)) is not None:
+                            self.import_recipe_image(recipe, BytesIO(response.content), filetype=get_filetype(file['originalPicture']))
+                        else:
+                            raise Exception("Original image failed to download.")
         except Exception as e:
             print(recipe.name, ': failed to import image ', str(e))
 
